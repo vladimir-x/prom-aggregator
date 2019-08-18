@@ -18,6 +18,8 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class Aggregator {
 
@@ -32,13 +34,18 @@ public class Aggregator {
 
     private static ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
 
+    private static String rrrrrrr = "";
 
     /// Внутренние метрики
-    private static Metric packSizeMetric = new Metric("aggregate_pack_size", Metric.Type.GAUGE,new BigDecimal(0));
+    private static Metric packSizeMetric = new Metric("aggregate_pack_size", Metric.Type.GAUGE, new BigDecimal(0));
+    private static Metric draininigTimeMetric = new Metric("aggregate_draining_ms", Metric.Type.GAUGE, new BigDecimal(0));
+    private static Metric simultaneouslyMetric = new Metric("aggregate_simultaneously_count", Metric.Type.GAUGE, new BigDecimal(0));
     //private static Metric cpuUsageMetric = new Metric("aggregate_cpu_usage", Metric.Type.GAUGE,new BigDecimal(0));
 
     private static volatile int packCount;
     private static volatile int packSizeAll;
+    private static AtomicLong simultaneouslyPost = new AtomicLong();
+    private static AtomicLong draininigTime = new AtomicLong();
 
 
     public static class Metric {
@@ -87,8 +94,16 @@ public class Aggregator {
 
         @Override
         protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+            simultaneouslyPost.addAndGet(1);
+
             Request request = ((Request) req);
             BufferedReader br = new BufferedReader(new InputStreamReader(request.getInputStream()));
+
+            //if (simultaneouslyPost.get()>1) {
+                //simultaneouslyMetric.value = new BigDecimal(simultaneouslyPost.get());
+                //rrrrrrr = "simultaneouslyPost.get() = " + simultaneouslyPost.get();
+                //System.out.println("simultaneouslyPost.get() = " + simultaneouslyPost.get());
+            //}
 
             String line = "";
             while ((line = br.readLine()) != null) {
@@ -102,7 +117,7 @@ public class Aggregator {
                         if (split.length > 1) {
                             String name = split[0].trim();
                             BigDecimal value = new BigDecimal(split[1].trim());
-                            Metric.Type type = split.length > 2 ? Metric.parseType(split[2].trim()) : Metric.Type.GAUGE ;
+                            Metric.Type type = split.length > 2 ? Metric.parseType(split[2].trim()) : Metric.Type.GAUGE;
 
                             queue.add(new Metric(name, type, value));
                         }
@@ -112,31 +127,33 @@ public class Aggregator {
                 }
 
             }
+
+            simultaneouslyPost.addAndGet(-1);
         }
     }
 
-    private static void fillSystemMertic(){
-        packSizeMetric.value = new BigDecimal(packCount >0 ? packSizeAll/packCount : 0);
-        //ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
-        //threadMXBean.getAllThreadIds()
-        //cpuUsageMetric.value =
+    private static void fillSystemMertic() {
+        packSizeMetric.value = new BigDecimal(packCount > 0 ? packSizeAll / packCount : 0);
+        //simultaneouslyMetric.value = new BigDecimal(simultaneouslyPost.get());
+        draininigTimeMetric.value = new BigDecimal(packCount > 0 ? draininigTime.get() / packCount : 0);
 
     }
 
-    private static void clearSystemMertic(){
+    private static void clearSystemMertic() {
         packSizeAll = 0;
         packCount = 0;
+        draininigTime.set(0);
 
     }
 
-    private static void fillStore(List<Metric> pack){
+    private static void fillStore(List<Metric> pack) {
         for (Metric m : pack) {
             Metric stored = store.get(m.name);
 
-            if (stored == null){
+            if (stored == null) {
                 store.put(m.name, m);
             } else {
-                if (stored.type == Metric.Type.COUNTER){
+                if (stored.type == Metric.Type.COUNTER) {
                     stored.value = stored.value.add(m.value);
                 } else {
                     stored.value = m.value;
@@ -144,7 +161,7 @@ public class Aggregator {
             }
         }
 
-        packCount +=1;
+        packCount += 1;
         packSizeAll += pack.size();
     }
 
@@ -163,11 +180,15 @@ public class Aggregator {
 
             server.setHandler(handler);
 
-            store.put(packSizeMetric.name,packSizeMetric);
+            store.put(packSizeMetric.name, packSizeMetric);
+            store.put(simultaneouslyMetric.name, simultaneouslyMetric);
+            store.put(draininigTimeMetric.name, draininigTimeMetric);
 
             executor.scheduleWithFixedDelay(new Runnable() {
                 @Override
                 public void run() {
+
+                    long st = System.currentTimeMillis();
                     ArrayBlockingQueue<Metric> buff = queue;
                     queue = new ArrayBlockingQueue<Metric>(queueSize);
 
@@ -175,9 +196,13 @@ public class Aggregator {
                     buff.drainTo(pack);
 
                     fillStore(pack);
+
+                    draininigTime.addAndGet(System.currentTimeMillis() - st);
                     fillSystemMertic();
+
+
                 }
-            }, queueDelay,queueDelay, TimeUnit.MILLISECONDS);
+            }, queueDelay, queueDelay, TimeUnit.MILLISECONDS);
 
 
             server.start();
