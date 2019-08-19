@@ -18,7 +18,6 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class Aggregator {
@@ -32,7 +31,11 @@ public class Aggregator {
 
     private static ArrayBlockingQueue<Metric> queue = new ArrayBlockingQueue<>(queueSize);
 
-    private static ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
+    // для пришедших метрик
+    private static ScheduledExecutorService sheduleExecutor = Executors.newScheduledThreadPool(1);
+
+    // для систменых метрик
+    private static ScheduledExecutorService systemExecutor = Executors.newScheduledThreadPool(1);
 
     private static String rrrrrrr = "";
 
@@ -40,12 +43,19 @@ public class Aggregator {
     private static Metric packSizeMetric = new Metric("aggregate_pack_size", Metric.Type.GAUGE, new BigDecimal(0));
     private static Metric draininigTimeMetric = new Metric("aggregate_draining_ms", Metric.Type.GAUGE, new BigDecimal(0));
     private static Metric simultaneouslyMetric = new Metric("aggregate_simultaneously_count", Metric.Type.GAUGE, new BigDecimal(0));
+    private static Metric postPerSecond = new Metric("aggregate_post_per_second_count", Metric.Type.GAUGE, new BigDecimal(0));
     //private static Metric cpuUsageMetric = new Metric("aggregate_cpu_usage", Metric.Type.GAUGE,new BigDecimal(0));
 
     private static volatile int packCount;
     private static volatile int packSizeAll;
+
+    private static AtomicLong totalPost = new AtomicLong();
+    private static AtomicLong prevTotalPost = new AtomicLong();
+
     private static AtomicLong simultaneouslyPost = new AtomicLong();
     private static AtomicLong draininigTime = new AtomicLong();
+
+
 
 
     public static class Metric {
@@ -73,6 +83,21 @@ public class Aggregator {
     }
 
 
+    public static class SystemMetricCalc{
+
+        Metric metric;
+
+        AtomicLong prevPost;
+
+        public SystemMetricCalc(Metric metric) {
+            this.metric = metric;
+        }
+
+
+
+    }
+
+
     private static class Listener extends HttpServlet {
 
         @Override
@@ -94,7 +119,8 @@ public class Aggregator {
 
         @Override
         protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-            simultaneouslyPost.addAndGet(1);
+            totalPost.incrementAndGet();
+            simultaneouslyPost.incrementAndGet();
 
             Request request = ((Request) req);
             BufferedReader br = new BufferedReader(new InputStreamReader(request.getInputStream()));
@@ -128,14 +154,16 @@ public class Aggregator {
 
             }
 
-            simultaneouslyPost.addAndGet(-1);
+            simultaneouslyPost.decrementAndGet();
         }
     }
 
     private static void fillSystemMertic() {
         packSizeMetric.value = new BigDecimal(packCount > 0 ? packSizeAll / packCount : 0);
-        //simultaneouslyMetric.value = new BigDecimal(simultaneouslyPost.get());
         draininigTimeMetric.value = new BigDecimal(packCount > 0 ? draininigTime.get() / packCount : 0);
+
+        simultaneouslyMetric.value = new BigDecimal(simultaneouslyPost.get());
+        postPerSecond.value = new BigDecimal(totalPost.get()-prevTotalPost.get());
 
     }
 
@@ -183,8 +211,11 @@ public class Aggregator {
             store.put(packSizeMetric.name, packSizeMetric);
             store.put(simultaneouslyMetric.name, simultaneouslyMetric);
             store.put(draininigTimeMetric.name, draininigTimeMetric);
+            store.put(postPerSecond.name, postPerSecond);
 
-            executor.scheduleWithFixedDelay(new Runnable() {
+
+
+            sheduleExecutor.scheduleWithFixedDelay(new Runnable() {
                 @Override
                 public void run() {
 
@@ -203,6 +234,16 @@ public class Aggregator {
 
                 }
             }, queueDelay, queueDelay, TimeUnit.MILLISECONDS);
+
+
+            systemExecutor.scheduleWithFixedDelay(new Runnable() {
+                @Override
+                public void run() {
+                    fillSystemMertic();
+
+                    prevTotalPost.set(totalPost.get());
+                }
+            }, 1, 1, TimeUnit.SECONDS);
 
 
             server.start();
