@@ -15,6 +15,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
@@ -103,6 +104,8 @@ public class Aggregator {
         @Override
         protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
             Request request = ((Request) req);
+            resp.setContentType("text; charset=UTF-8");
+            resp.setCharacterEncoding("UTF8");
             if (request.getServletPath().equals("/metrics")) {
                 for (Metric metric : store.values()) {
                     resp.getWriter().print(metric.name);
@@ -123,7 +126,7 @@ public class Aggregator {
             simultaneouslyPost.incrementAndGet();
 
             Request request = ((Request) req);
-            BufferedReader br = new BufferedReader(new InputStreamReader(request.getInputStream()));
+            BufferedReader br = new BufferedReader(new InputStreamReader(request.getInputStream(), Charset.forName("UTF8")));
 
             //if (simultaneouslyPost.get()>1) {
                 //simultaneouslyMetric.value = new BigDecimal(simultaneouslyPost.get());
